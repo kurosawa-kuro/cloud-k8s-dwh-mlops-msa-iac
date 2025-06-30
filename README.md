@@ -52,11 +52,13 @@ graph TB
     end
     
     subgraph "Microservices Layer"
-        D[User Service - Gin]
-        E[Product Service - Gin]
-        F[Order Service - Gin]
-        G[Cart Service - Gin]
-        H[Recommendation Service - Gin]
+        D[Auth Service - Gin]
+        E[User Service - Gin]
+        F[Product Service - Gin]
+        G[Order Service - Gin]
+        H[Cart Service - Gin]
+        I[Payment Service - Gin]
+        J[Recommendation Service - Gin]
     end
     
     subgraph "Data Layer"
@@ -85,11 +87,15 @@ graph TB
     B --> F
     B --> G
     B --> H
+    B --> I
+    B --> J
     D --> I
     E --> I
     F --> I
     G --> I
     H --> I
+    I --> I
+    J --> I
     D --> J
     E --> J
     F --> J
@@ -101,9 +107,9 @@ graph TB
     L --> P
     P --> Q
     Q --> R
-    H --> P
-    H --> Q
-    H --> R
+    J --> P
+    J --> Q
+    J --> R
 ```
 
 ## データモデル設計
@@ -122,6 +128,7 @@ graph TB
 
 #### 取引管理
 - **Order/OrderItem**: 注文管理
+- **Payment**: 決済管理（独立サービス）
 - **CartItem**: カート機能
 - **Return/ReturnItem**: 返品処理
 - **ViewHistory**: 閲覧履歴（ML学習用）
@@ -140,7 +147,56 @@ UserActionLog: 行動ログ分析（PCA次元削減）
 
 ### Service Boundaries
 
-#### 1. User Service
+#### 🔐 **1. Auth Service**
+```go
+// Responsibilities:
+- JWT トークン発行・検証
+- Keycloak 連携・プロキシ
+- セッション管理
+- 認証状態管理
+- パスワードリセット
+- MFA 管理
+
+// APIs:
+POST   /api/v1/auth/login
+POST   /api/v1/auth/logout  
+POST   /api/v1/auth/refresh
+GET    /api/v1/auth/verify
+POST   /api/v1/auth/password-reset
+POST   /api/v1/auth/mfa/enable
+POST   /api/v1/auth/mfa/verify
+
+// Internal APIs (for other services):
+GET    /api/internal/auth/validate-token
+GET    /api/internal/auth/user-permissions/{userId}
+```
+
+#### 👤 **2. User Service**
+```go
+// Responsibilities:
+- ユーザープロファイル管理
+- ユーザー設定・嗜好
+- ユーザー関連ビジネスロジック
+- Keycloak ユーザー同期
+- ユーザー分析データ
+
+// APIs:
+GET    /api/v1/users/{id}
+PUT    /api/v1/users/{id}
+GET    /api/v1/users/{id}/profile
+PUT    /api/v1/users/{id}/profile
+GET    /api/v1/users/{id}/preferences
+PUT    /api/v1/users/{id}/preferences
+GET    /api/v1/users/{id}/analytics
+POST   /api/v1/users/{id}/deactivate
+
+// Admin APIs:
+GET    /api/v1/admin/users
+POST   /api/v1/admin/users/{id}/roles
+DELETE /api/v1/admin/users/{id}/roles/{roleId}
+```
+
+#### 🛍️ **3. Product Service**
 ```go
 // Responsibilities:
 - ユーザー認証・認可 (Keycloak連携)
@@ -227,7 +283,7 @@ POST   /api/v1/recommendations/feedback
 GET    /api/v1/products/{productId}/similar
 ```
 
-#### 6. Workflow Orchestration Service
+#### ⚙️ **8. Workflow Orchestration Service**
 ```go
 // Responsibilities:
 - データパイプライン管理
@@ -240,6 +296,561 @@ POST   /api/v1/workflows/trigger/{workflow_id}
 GET    /api/v1/workflows/status/{execution_id}
 GET    /api/v1/workflows/logs/{execution_id}
 POST   /api/v1/workflows/retry/{execution_id}
+```
+
+## Payment Service 詳細設計
+
+### アーキテクチャ
+
+```mermaid
+graph TB
+    subgraph "Payment Service Architecture"
+        A[Payment Gateway]
+        B[Payment Processor]
+        C[Card Vault]
+        D[Fraud Detection]
+        E[Audit Logger]
+        F[Webhook Handler]
+    end
+    
+    subgraph "External Payment Providers"
+        G[Stripe]
+        H[PayPal]
+        I[Bank APIs]
+        J[Credit Card Networks]
+    end
+    
+    subgraph "Internal Services"
+        K[Order Service]
+        L[User Service]
+        M[Notification Service]
+    end
+    
+    A --> B
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+    B --> G
+    B --> H
+    B --> I
+    G --> J
+    H --> J
+    K --> A
+    A --> L
+    A --> M
+```
+
+### データモデル設計
+
+```prisma
+// Payment Service Database Schema
+
+model Payment {
+  id                String        @id @default(uuid())
+  orderId           String        // Order Service との関連
+  userId            String        // User Service との関連
+  amount            Decimal       @db.Money
+  currency          String        @default("JPY")
+  status            PaymentStatus @default(PENDING)
+  paymentMethod     PaymentMethod
+  
+  // Provider specific data (encrypted)
+  providerTransactionId String?
+  providerData          Json?       @db.JsonB
+  
+  // Security & Compliance
+  ipAddress         String?
+  userAgent         String?
+  riskScore         Float?
+  fraudCheckResult  Json?         @db.JsonB
+  
+  // Audit fields
+  createdAt         DateTime      @default(now())
+  updatedAt         DateTime      @updatedAt
+  processedAt       DateTime?
+  
+  // Relations
+  refunds           Refund[]
+  disputes          Dispute[]
+  webhookEvents     WebhookEvent[]
+  
+  @@index([orderId])
+  @@index([userId])
+  @@index([status])
+  @@index([createdAt])
+}
+
+enum PaymentStatus {
+  PENDING           // 処理待ち
+  PROCESSING        // 処理中
+  AUTHORIZED        // 認証済み（未キャプチャ）
+  CAPTURED          // キャプチャ済み
+  COMPLETED         // 完了
+  FAILED            // 失敗
+  CANCELLED         // キャンセル
+  REFUNDED          // 返金済み
+  PARTIALLY_REFUNDED // 部分返金
+  DISPUTED          // 争議中
+}
+
+enum PaymentMethod {
+  CREDIT_CARD
+  DEBIT_CARD
+  BANK_TRANSFER
+  DIGITAL_WALLET    // PayPal, Apple Pay, Google Pay
+  CRYPTOCURRENCY
+  BNPL             // Buy Now Pay Later
+}
+
+model PaymentMethodStore {
+  id              String    @id @default(uuid())
+  userId          String
+  type            PaymentMethod
+  isDefault       Boolean   @default(false)
+  
+  // Encrypted card data (PCI DSS compliant)
+  encryptedData   String    // カード番号、CVVは外部Vault
+  last4Digits     String?   // 表示用
+  expiryMonth     Int?
+  expiryYear      Int?
+  cardBrand       String?   // Visa, MasterCard, etc.
+  
+  // Bank account data
+  bankName        String?
+  accountType     String?
+  
+  // Metadata
+  billingAddress  Json?     @db.JsonB
+  metadata        Json?     @db.JsonB
+  
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  lastUsedAt      DateTime?
+  
+  @@index([userId])
+  @@index([type])
+}
+
+model Refund {
+  id              String      @id @default(uuid())
+  paymentId       String
+  amount          Decimal     @db.Money
+  reason          RefundReason
+  status          RefundStatus @default(PENDING)
+  
+  providerRefundId String?
+  processedAt      DateTime?
+  
+  createdAt       DateTime    @default(now())
+  updatedAt       DateTime    @updatedAt
+  
+  payment         Payment     @relation(fields: [paymentId], references: [id])
+  
+  @@index([paymentId])
+}
+
+enum RefundReason {
+  CUSTOMER_REQUEST
+  FRAUD_PREVENTION
+  ORDER_CANCELLATION
+  QUALITY_ISSUE
+  SHIPPING_ISSUE
+  DUPLICATE_PAYMENT
+  CHARGEBACK
+}
+
+enum RefundStatus {
+  PENDING
+  PROCESSING
+  COMPLETED
+  FAILED
+  REJECTED
+}
+
+model Dispute {
+  id              String        @id @default(uuid())
+  paymentId       String
+  amount          Decimal       @db.Money
+  reason          DisputeReason
+  status          DisputeStatus @default(RECEIVED)
+  evidenceRequired Boolean      @default(true)
+  
+  providerDisputeId String?
+  dueDate          DateTime?
+  resolvedAt       DateTime?
+  
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+  
+  payment         Payment       @relation(fields: [paymentId], references: [id])
+  
+  @@index([paymentId])
+  @@index([status])
+}
+
+enum DisputeReason {
+  FRAUD
+  AUTHORIZATION
+  PROCESSING_ERROR
+  CUSTOMER_DISPUTE
+  DUPLICATE_PROCESSING
+  CREDIT_NOT_PROCESSED
+  CANCELLED_SUBSCRIPTION
+  PRODUCT_NOT_RECEIVED
+  PRODUCT_UNACCEPTABLE
+}
+
+enum DisputeStatus {
+  RECEIVED
+  UNDER_REVIEW
+  NEEDS_RESPONSE
+  WAITING_EVIDENCE
+  RESOLVED_WON
+  RESOLVED_LOST
+  CLOSED
+}
+```
+
+### Service Implementation Examples
+
+#### Auth Service Implementation
+```go
+// auth-service/internal/handlers/auth.go
+package handlers
+
+type AuthHandler struct {
+    keycloakClient *keycloak.Client
+    redisClient    *redis.Client
+    userService    *clients.UserServiceClient
+}
+
+// ログイン処理
+func (h *AuthHandler) Login(c *gin.Context) {
+    var req LoginRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // Keycloak 認証
+    token, err := h.keycloakClient.Login(req.Email, req.Password)
+    if err != nil {
+        c.JSON(401, gin.H{"error": "Invalid credentials"})
+        return
+    }
+    
+    // セッション作成
+    sessionID := generateSessionID()
+    session := Session{
+        ID:          sessionID,
+        UserID:      token.Subject,
+        AccessToken: token.AccessToken,
+        RefreshToken: token.RefreshToken,
+        ExpiresAt:   time.Now().Add(time.Hour * 24),
+    }
+    
+    err = h.redisClient.SetSession(sessionID, session)
+    if err != nil {
+        c.JSON(500, gin.H{"error": "Failed to create session"})
+        return
+    }
+    
+    // User Service に最終ログイン時刻更新を依頼
+    go h.userService.UpdateLastLogin(token.Subject)
+    
+    c.JSON(200, LoginResponse{
+        SessionID: sessionID,
+        User:      token.Claims,
+        ExpiresAt: session.ExpiresAt,
+    })
+}
+
+// トークン検証 (他サービス向け)
+func (h *AuthHandler) ValidateToken(c *gin.Context) {
+    sessionID := c.GetHeader("X-Session-ID")
+    
+    session, err := h.redisClient.GetSession(sessionID)
+    if err != nil {
+        c.JSON(401, gin.H{"error": "Invalid session"})
+        return
+    }
+    
+    // Keycloak でトークン検証
+    valid, claims, err := h.keycloakClient.ValidateToken(session.AccessToken)
+    if err != nil || !valid {
+        c.JSON(401, gin.H{"error": "Invalid token"})
+        return
+    }
+    
+    c.JSON(200, ValidationResponse{
+        Valid:  true,
+        UserID: claims.Subject,
+        Roles:  claims.RealmRoles,
+    })
+}
+```
+
+#### Payment Service Implementation
+```go
+// payment-service/internal/handlers/payment.go
+package handlers
+
+type PaymentHandler struct {
+    db              *sql.DB
+    stripeClient    *stripe.Client
+    paypalClient    *paypal.Client
+    vaultClient     *vault.Client
+    fraudDetector   *fraud.Detector
+    eventPublisher  *events.Publisher
+}
+
+// 決済処理
+func (h *PaymentHandler) ProcessPayment(c *gin.Context) {
+    var req ProcessPaymentRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // 1. 不正検知
+    riskScore, err := h.fraudDetector.AnalyzeTransaction(req)
+    if err != nil {
+        c.JSON(500, gin.H{"error": "Fraud analysis failed"})
+        return
+    }
+    
+    if riskScore > HIGH_RISK_THRESHOLD {
+        c.JSON(400, gin.H{"error": "Transaction blocked due to high risk"})
+        return
+    }
+    
+    // 2. Payment record 作成
+    payment := Payment{
+        ID:           generateUUID(),
+        OrderID:      req.OrderID,
+        UserID:       req.UserID,
+        Amount:       req.Amount,
+        Currency:     req.Currency,
+        Status:       PENDING,
+        PaymentMethod: req.PaymentMethod,
+        IPAddress:    c.ClientIP(),
+        UserAgent:    c.GetHeader("User-Agent"),
+        RiskScore:    riskScore,
+        CreatedAt:    time.Now(),
+    }
+    
+    err = h.db.CreatePayment(&payment)
+    if err != nil {
+        c.JSON(500, gin.H{"error": "Failed to create payment record"})
+        return
+    }
+    
+    // 3. 決済プロバイダー処理
+    var providerResponse ProviderResponse
+    switch req.PaymentMethod {
+    case CREDIT_CARD:
+        providerResponse, err = h.processStripePayment(payment, req)
+    case DIGITAL_WALLET:
+        providerResponse, err = h.processPayPalPayment(payment, req)
+    default:
+        err = errors.New("unsupported payment method")
+    }
+    
+    if err != nil {
+        payment.Status = FAILED
+        h.db.UpdatePayment(&payment)
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // 4. 結果更新
+    payment.Status = providerResponse.Status
+    payment.ProviderTransactionID = providerResponse.TransactionID
+    payment.ProviderData = providerResponse.Metadata
+    payment.ProcessedAt = time.Now()
+    
+    err = h.db.UpdatePayment(&payment)
+    if err != nil {
+        // Critical error - notify operations team
+        h.eventPublisher.PublishCriticalError("payment_update_failed", payment.ID)
+    }
+    
+    // 5. イベント発行
+    event := PaymentProcessedEvent{
+        PaymentID: payment.ID,
+        OrderID:   payment.OrderID,
+        Status:    payment.Status,
+        Amount:    payment.Amount,
+    }
+    h.eventPublisher.Publish("payment.processed", event)
+    
+    c.JSON(200, PaymentResponse{
+        PaymentID: payment.ID,
+        Status:    payment.Status,
+        Message:   "Payment processed successfully",
+    })
+}
+
+// 返金処理
+func (h *PaymentHandler) ProcessRefund(c *gin.Context) {
+    paymentID := c.Param("id")
+    
+    var req RefundRequest
+    if err := c.ShouldBindJSON(&req); err != nil {
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // 1. Payment 取得
+    payment, err := h.db.GetPayment(paymentID)
+    if err != nil {
+        c.JSON(404, gin.H{"error": "Payment not found"})
+        return
+    }
+    
+    // 2. 返金可能チェック
+    if payment.Status != COMPLETED && payment.Status != CAPTURED {
+        c.JSON(400, gin.H{"error": "Payment cannot be refunded"})
+        return
+    }
+    
+    // 3. 返金レコード作成
+    refund := Refund{
+        ID:        generateUUID(),
+        PaymentID: paymentID,
+        Amount:    req.Amount,
+        Reason:    req.Reason,
+        Status:    PENDING,
+        CreatedAt: time.Now(),
+    }
+    
+    err = h.db.CreateRefund(&refund)
+    if err != nil {
+        c.JSON(500, gin.H{"error": "Failed to create refund record"})
+        return
+    }
+    
+    // 4. プロバイダー返金処理
+    providerRefundID, err := h.processProviderRefund(payment, req.Amount)
+    if err != nil {
+        refund.Status = FAILED
+        h.db.UpdateRefund(&refund)
+        c.JSON(400, gin.H{"error": err.Error()})
+        return
+    }
+    
+    // 5. 結果更新
+    refund.Status = COMPLETED
+    refund.ProviderRefundID = providerRefundID
+    refund.ProcessedAt = time.Now()
+    h.db.UpdateRefund(&refund)
+    
+    // 6. イベント発行
+    event := RefundProcessedEvent{
+        RefundID:  refund.ID,
+        PaymentID: paymentID,
+        OrderID:   payment.OrderID,
+        Amount:    refund.Amount,
+    }
+    h.eventPublisher.Publish("payment.refunded", event)
+    
+    c.JSON(200, RefundResponse{
+        RefundID: refund.ID,
+        Status:   refund.Status,
+        Message:  "Refund processed successfully",
+    })
+}
+```
+
+### Service Communication & Security
+
+#### Inter-Service Authentication
+```go
+// shared/clients/auth_client.go
+package clients
+
+type AuthServiceClient struct {
+    baseURL string
+    client  *http.Client
+}
+
+type ValidationResponse struct {
+    Valid  bool     `json:"valid"`
+    UserID string   `json:"user_id"`
+    Roles  []string `json:"roles"`
+}
+
+func (c *AuthServiceClient) ValidateRequest(req *http.Request) (*ValidationResponse, error) {
+    sessionID := req.Header.Get("X-Session-ID")
+    if sessionID == "" {
+        return nil, errors.New("no session ID")
+    }
+    
+    resp, err := c.client.Get(c.baseURL + "/api/internal/auth/validate-token?session_id=" + sessionID)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+    
+    var validation ValidationResponse
+    err = json.NewDecoder(resp.Body).Decode(&validation)
+    return &validation, err
+}
+```
+
+#### Order Service との連携
+```go
+// order-service/internal/handlers/order.go
+package handlers
+
+func (h *OrderHandler) CreateOrder(c *gin.Context) {
+    // 1. 注文作成
+    order := createOrder(req)
+    err := h.db.CreateOrder(&order)
+    if err != nil {
+        c.JSON(500, gin.H{"error": "Failed to create order"})
+        return
+    }
+    
+    // 2. 在庫引当
+    err = h.inventoryService.ReserveItems(order.Items)
+    if err != nil {
+        h.db.DeleteOrder(order.ID) // ロールバック
+        c.JSON(400, gin.H{"error": "Insufficient inventory"})
+        return
+    }
+    
+    // 3. Payment Service に決済依頼
+    paymentReq := PaymentRequest{
+        OrderID:         order.ID,
+        UserID:          order.UserID,
+        Amount:          order.TotalAmount,
+        Currency:        "JPY",
+        PaymentMethod:   req.PaymentMethod,
+        PaymentMethodID: req.PaymentMethodID,
+    }
+    
+    paymentResp, err := h.paymentService.ProcessPayment(paymentReq)
+    if err != nil {
+        // 在庫解放
+        h.inventoryService.ReleaseItems(order.Items)
+        h.db.DeleteOrder(order.ID)
+        c.JSON(400, gin.H{"error": "Payment failed"})
+        return
+    }
+    
+    // 4. 注文ステータス更新
+    order.Status = ORDER_CONFIRMED
+    order.PaymentID = paymentResp.PaymentID
+    h.db.UpdateOrder(&order)
+    
+    c.JSON(200, OrderResponse{
+        OrderID:   order.ID,
+        PaymentID: paymentResp.PaymentID,
+        Status:    order.Status,
+    })
+}
 ```
 
 ## Apache Airflow 統合設計
@@ -1263,6 +1874,7 @@ Namespaces:
 - ecshop-ml
 - ecshop-airflow
 - ecshop-auth
+- ecshop-payment
 
 Services per Namespace:
 Frontend: Next.js (3 replicas)
@@ -1272,6 +1884,7 @@ Data: PostgreSQL, Redis, RabbitMQ
 ML: MLflow, Kubeflow components
 Airflow: Scheduler, Webserver, Workers (3 replicas each)
 Auth: Keycloak (2 replicas), PostgreSQL for Keycloak
+Payment: Payment Service (3 replicas), PostgreSQL for Payment, PCI DSS compliant network
 ```
 
 ### AWS Resources
@@ -1279,13 +1892,18 @@ Auth: Keycloak (2 replicas), PostgreSQL for Keycloak
 ```hcl
 # Terraform managed
 - EKS Cluster (multi-AZ)
-- RDS PostgreSQL (Multi-AZ)
-- RDS PostgreSQL (Airflow Metadata)
+- RDS PostgreSQL (Multi-AZ) - Main Database
+- RDS PostgreSQL (Multi-AZ) - Keycloak Database  
+- RDS PostgreSQL (Multi-AZ) - Payment Database (PCI DSS compliant)
+- RDS PostgreSQL (Single-AZ) - Airflow Metadata
 - ElastiCache Redis
 - S3 (data lake, model artifacts, airflow logs)
-- ALB (ingress)
-- Route53 (DNS)
+- ALB (ingress, Keycloak load balancing)
+- Route53 (DNS, auth.ecshop.com, payments.ecshop.com)
 - CloudWatch (monitoring)
+- AWS Secrets Manager (Keycloak secrets, Payment secrets)
+- AWS WAF (Payment Service protection)
+- AWS Payment Cryptography (Card data vault)
 ```
 
 ## セキュリティ設計
@@ -1294,14 +1912,25 @@ Auth: Keycloak (2 replicas), PostgreSQL for Keycloak
 
 ```yaml
 Authentication:
-- Keycloak OIDC/OAuth2
-- JWT Token based
-- Multi-factor Authentication
+- Keycloak OIDC/OAuth2 (Primary IdP)
+- JWT Token based authentication
+- Multi-factor Authentication support
+- Social Login (Google, GitHub, etc.)
+- LDAP/Active Directory integration capability
 
 Authorization:
-- RBAC (Role-Based Access Control)
+- RBAC (Role-Based Access Control) via Keycloak
+- Fine-grained permissions with client roles
 - API Gateway レベルでの認可
 - Service-to-Service mTLS
+- Policy-based access control
+
+Payment Security:
+- PCI DSS Level 1 compliance
+- Separate security domain for payment operations
+- Card data encryption at rest and in transit
+- Tokenization for card storage
+- Real-time fraud detection
 ```
 
 ### Data Security
@@ -1310,11 +1939,29 @@ Authorization:
 In-Transit:
 - TLS 1.3 全通信
 - Service Mesh (Istio) encryption
+- Keycloak HTTPS termination
+- Payment Service dedicated TLS termination
 
 At-Rest:
-- PostgreSQL encryption
+- PostgreSQL encryption (Main + Keycloak + Airflow + Payment)
 - S3 bucket encryption
-- Secrets management (AWS Secrets Manager)
+- Secrets management (AWS Secrets Manager + Keycloak Vault)
+- Keycloak credential encryption
+- Payment data encryption (AWS Payment Cryptography)
+
+Identity Security:
+- Token rotation and revocation
+- Session management and timeout
+- Audit logging for all authentication events
+- Failed login attempt protection
+
+Payment Security:
+- PCI DSS compliant data storage
+- Card data tokenization
+- Real-time transaction monitoring
+- Fraud detection algorithms
+- Chargeback and dispute management
+- Detailed audit logs for compliance
 ```
 
 ## モニタリング・運用
@@ -1335,6 +1982,14 @@ Business Metrics:
 - Model Performance (precision, recall)
 - Data Pipeline SLA
 - Workflow Success Rate
+
+Payment Metrics:
+- Transaction Success Rate
+- Payment Method Distribution
+- Fraud Detection Accuracy
+- Chargeback Rate
+- Average Transaction Value
+- Payment Processing Time
 ```
 
 ### FinOps
@@ -1396,15 +2051,23 @@ API Response Time:
 - p95 < 200ms (product catalog)
 - p95 < 500ms (recommendations)
 - p95 < 100ms (cart operations)
+- p95 < 300ms (payment processing)
+- p95 < 150ms (auth operations)
 
 Availability:
 - 99.9% uptime
 - 99.95% during peak hours
+- 99.99% payment service uptime
 
 ML Model Performance:
 - Recommendation relevance > 85%
 - Model training < 2 hours
 - Real-time inference < 50ms
+
+Payment Performance:
+- Payment success rate > 99%
+- Fraud detection accuracy > 95%
+- Dispute resolution time < 7 days
 ```
 
 ### Scalability
@@ -1461,6 +2124,12 @@ cd ecshop
 # Infrastructure setup
 cd terraform && terraform apply
 
+# Deploy Keycloak first
+cd k8s/keycloak && kubectl apply -f .
+
+# Configure Keycloak realm and clients
+cd scripts && ./setup-keycloak.sh
+
 # Start Airflow locally
 cd airflow && docker-compose up -d
 
@@ -1474,9 +2143,14 @@ npm run dev
 # Deploy via ArgoCD
 kubectl apply -f k8s/argocd-apps/
 
-# Access Airflow UI
+# Access services
 kubectl port-forward -n ecshop-airflow svc/airflow-webserver 8080:8080
-# Open http://localhost:8080 (admin/admin)
+kubectl port-forward -n ecshop-auth svc/keycloak 8081:8080
+
+# Open services
+# Airflow: http://localhost:8080 (admin/admin)
+# Keycloak: http://localhost:8081 (admin/admin)
+# Main App: https://ecshop.com
 ```
 
 ---
