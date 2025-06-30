@@ -1,1 +1,977 @@
 # cloud-k8s-dwh-mlops-msa-iac
+
+# ECShop - Enterprise E-commerce Platform
+
+## 概要
+
+ECShopは、最新のクラウドネイティブ技術スタックを活用したエンタープライズグレードのECプラットフォームです。マイクロサービスアーキテクチャ、データドリブンなレコメンデーション、MLOpsによる継続的な機械学習改善を特徴としています。
+
+## アーキテクチャ概要
+
+### Technology Stack
+
+```
+Infrastructure Layer:
+├── AWS EKS (Kubernetes)
+├── Terraform (IaC)
+└── PostgreSQL on RDS
+
+Application Layer:
+├── Frontend: Next.js (TypeScript)
+├── API Gateway: Spring Boot
+├── Microservices: Gin (Go)
+└── Authentication: Keycloak
+
+Data Platform:
+├── Operational DB: PostgreSQL
+├── Message Queue: RabbitMQ/Apache Kafka
+├── Workflow Orchestration: Apache Airflow
+├── ETL: dbt
+├── Analytics DB: DuckDB
+└── Data Warehouse: Snowflake
+
+MLOps Platform:
+├── Experiment Tracking: MLflow
+├── Pipeline: Kubeflow
+├── Model Serving: KServe
+├── Orchestration: Apache Airflow
+└── Feature Store: Built-in
+```
+
+## システム構成
+
+### Microservices Architecture
+
+```mermaid
+graph TB
+    subgraph "Frontend Layer"
+        A[Next.js App]
+    end
+    
+    subgraph "API Gateway Layer"
+        B[Spring Boot Gateway]
+        C[Keycloak Auth]
+    end
+    
+    subgraph "Microservices Layer"
+        D[User Service - Gin]
+        E[Product Service - Gin]
+        F[Order Service - Gin]
+        G[Cart Service - Gin]
+        H[Recommendation Service - Gin]
+    end
+    
+    subgraph "Data Layer"
+        I[PostgreSQL]
+        J[Message Queue]
+        K[Redis Cache]
+        L[Apache Airflow]
+    end
+    
+    subgraph "Analytics Layer"
+        M[dbt ETL]
+        N[DuckDB]
+        O[Snowflake DWH]
+    end
+    
+    subgraph "ML Platform"
+        P[MLflow]
+        Q[Kubeflow]
+        R[KServe]
+    end
+    
+    A --> B
+    B --> C
+    B --> D
+    B --> E
+    B --> F
+    B --> G
+    B --> H
+    D --> I
+    E --> I
+    F --> I
+    G --> I
+    H --> I
+    D --> J
+    E --> J
+    F --> J
+    L --> M
+    I --> L
+    J --> L
+    M --> N
+    M --> O
+    L --> P
+    P --> Q
+    Q --> R
+    H --> P
+    H --> Q
+    H --> R
+```
+
+## データモデル設計
+
+### Core Entities
+
+#### ユーザー管理
+- **User**: Cognito連携による認証基盤
+- **Role/UserRole**: RBAC による権限管理
+- **UserActionLog**: 全ユーザー行動のログ収集
+
+#### 商品管理
+- **Product**: 商品マスタ
+- **Category/ProductCategory**: 多階層カテゴリ
+- **TopPageDisplay**: パーソナライゼーション対応
+
+#### 取引管理
+- **Order/OrderItem**: 注文管理
+- **CartItem**: カート機能
+- **Return/ReturnItem**: 返品処理
+- **ViewHistory**: 閲覧履歴（ML学習用）
+
+### ML特化データ設計
+
+```sql
+-- レコメンデーション用特徴量
+ViewHistory: ユーザー閲覧パターン（Random Forest）
+CartItem: カート行動分析（K-means クラスタリング）
+Order: 購入履歴予測（Linear Regression）
+UserActionLog: 行動ログ分析（PCA次元削減）
+```
+
+## マイクロサービス設計
+
+### Service Boundaries
+
+#### 1. User Service
+```go
+// Responsibilities:
+- ユーザー認証・認可
+- プロファイル管理
+- ロール・権限管理
+
+// APIs:
+GET    /api/v1/users/{id}
+PUT    /api/v1/users/{id}
+POST   /api/v1/users/{id}/roles
+DELETE /api/v1/users/{id}/roles/{roleId}
+```
+
+#### 2. Product Service
+```go
+// Responsibilities:
+- 商品マスタ管理
+- カテゴリ管理
+- 在庫管理
+
+// APIs:
+GET    /api/v1/products
+GET    /api/v1/products/{id}
+POST   /api/v1/products
+PUT    /api/v1/products/{id}
+GET    /api/v1/categories
+```
+
+#### 3. Order Service
+```go
+// Responsibilities:
+- 注文処理
+- 決済連携
+- 注文履歴管理
+
+// APIs:
+POST   /api/v1/orders
+GET    /api/v1/orders/{id}
+GET    /api/v1/users/{userId}/orders
+PUT    /api/v1/orders/{id}/status
+```
+
+#### 4. Cart Service
+```go
+// Responsibilities:
+- カート管理
+- セッション管理
+- 一時保存
+
+// APIs:
+GET    /api/v1/users/{userId}/cart
+POST   /api/v1/users/{userId}/cart/items
+PUT    /api/v1/users/{userId}/cart/items/{itemId}
+DELETE /api/v1/users/{userId}/cart/items/{itemId}
+```
+
+#### 6. Workflow Orchestration Service
+```go
+// Responsibilities:
+- データパイプライン管理
+- MLワークフロー自動化
+- バッチ処理スケジューリング
+- 業務プロセス自動化
+
+// Integration APIs:
+POST   /api/v1/workflows/trigger/{workflow_id}
+GET    /api/v1/workflows/status/{execution_id}
+GET    /api/v1/workflows/logs/{execution_id}
+POST   /api/v1/workflows/retry/{execution_id}
+```
+
+#### 5. Recommendation Service
+```go
+// Responsibilities:
+- ML モデル予測
+- レコメンデーション生成
+- A/Bテスト管理
+
+// APIs:
+GET    /api/v1/users/{userId}/recommendations
+POST   /api/v1/recommendations/feedback
+GET    /api/v1/products/{productId}/similar
+```
+
+#### 6. Workflow Orchestration Service
+```go
+// Responsibilities:
+- データパイプライン管理
+- MLワークフロー自動化
+- バッチ処理スケジューリング
+- 業務プロセス自動化
+
+// Integration APIs:
+POST   /api/v1/workflows/trigger/{workflow_id}
+GET    /api/v1/workflows/status/{execution_id}
+GET    /api/v1/workflows/logs/{execution_id}
+POST   /api/v1/workflows/retry/{execution_id}
+```
+
+## Apache Airflow 統合設計
+
+### Workflow Orchestration Architecture
+
+```mermaid
+graph TB
+    subgraph "Airflow Core"
+        A[Airflow Scheduler]
+        B[Airflow Webserver]
+        C[Airflow Workers]
+        D[Airflow Metadata DB]
+    end
+    
+    subgraph "Data Workflows"
+        E[Daily ETL Pipeline]
+        F[Real-time Processing]
+        G[Data Quality Checks]
+        H[Snowflake Sync]
+    end
+    
+    subgraph "ML Workflows"
+        I[Model Training Pipeline]
+        J[Model Validation]
+        K[Model Deployment]
+        L[A/B Test Management]
+    end
+    
+    subgraph "Business Workflows"
+        M[Daily Reports]
+        N[Marketing Automation]
+        O[Inventory Management]
+        P[Customer Lifecycle]
+    end
+    
+    A --> E
+    A --> F
+    A --> G
+    A --> H
+    A --> I
+    A --> J
+    A --> K
+    A --> L
+    A --> M
+    A --> N
+    A --> O
+    A --> P
+    
+    C --> D
+    B --> D
+```
+
+### Core DAG Collections
+
+#### 1. データパイプライン DAGs
+```python
+# dags/data_pipeline/daily_etl.py
+from airflow import DAG
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.snowflake.operators.snowflake import SnowflakeOperator
+from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
+
+dag = DAG(
+    'daily_etl_pipeline',
+    description='Daily ETL from PostgreSQL to Snowflake',
+    schedule_interval='0 2 * * *',  # 毎日 AM 2:00
+    start_date=datetime(2025, 1, 1),
+    catchup=False,
+    max_active_runs=1
+)
+
+# 1. データ品質チェック
+data_quality_check = PostgresOperator(
+    task_id='data_quality_check',
+    sql="""
+    SELECT 
+        COUNT(*) as total_orders,
+        COUNT(CASE WHEN total_amount <= 0 THEN 1 END) as invalid_orders
+    FROM orders 
+    WHERE DATE(ordered_at) = CURRENT_DATE - INTERVAL '1 day'
+    """,
+    dag=dag
+)
+
+# 2. dbt transformation
+dbt_run = KubernetesPodOperator(
+    task_id='dbt_transform',
+    image='your-repo/dbt-snowflake:latest',
+    cmds=['dbt', 'run', '--select', 'tag:daily'],
+    namespace='ecshop-data',
+    env_vars={
+        'DBT_PROFILES_DIR': '/opt/dbt',
+        'TARGET_DATE': '{{ ds }}'
+    },
+    dag=dag
+)
+
+# 3. Snowflake データ同期
+sync_to_snowflake = SnowflakeOperator(
+    task_id='sync_to_snowflake',
+    sql="""
+    CALL sync_daily_data_procedure('{{ ds }}');
+    """,
+    dag=dag
+)
+
+# 4. データ検証
+validate_sync = SnowflakeOperator(
+    task_id='validate_sync',
+    sql="""
+    SELECT 
+        CASE 
+            WHEN COUNT(*) > 0 THEN 'SUCCESS'
+            ELSE 'FAILED'
+        END as validation_result
+    FROM ANALYTICS.DAILY_SALES
+    WHERE sale_date = '{{ ds }}'
+    """,
+    dag=dag
+)
+
+# Dependencies
+data_quality_check >> dbt_run >> sync_to_snowflake >> validate_sync
+```
+
+#### 2. MLOps パイプライン DAGs
+```python
+# dags/ml_pipeline/recommendation_training.py
+from airflow.providers.cncf.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
+from airflow.providers.http.operators.http import SimpleHttpOperator
+
+dag = DAG(
+    'recommendation_model_training',
+    description='Weekly recommendation model retraining',
+    schedule_interval='0 1 * * 0',  # 毎週日曜 AM 1:00
+    start_date=datetime(2025, 1, 1),
+    catchup=False
+)
+
+# 1. 特徴量準備
+prepare_features = KubernetesPodOperator(
+    task_id='prepare_features',
+    image='your-repo/ml-feature-engineering:latest',
+    cmds=['python', 'prepare_features.py'],
+    namespace='ecshop-ml',
+    resources={
+        'request_memory': '4Gi',
+        'request_cpu': '2',
+        'limit_memory': '8Gi',
+        'limit_cpu': '4'
+    },
+    dag=dag
+)
+
+# 2. モデル訓練 (Kubeflow Pipeline)
+train_model = KubernetesPodOperator(
+    task_id='train_recommendation_model',
+    image='your-repo/kubeflow-client:latest',
+    cmds=['python', 'trigger_training_pipeline.py'],
+    namespace='ecshop-ml',
+    env_vars={
+        'KUBEFLOW_ENDPOINT': 'http://kubeflow-pipelines.kubeflow:8888',
+        'EXPERIMENT_NAME': 'recommendation-training',
+        'PIPELINE_VERSION': 'v{{ ds_nodash }}'
+    },
+    dag=dag
+)
+
+# 3. モデル評価
+evaluate_model = KubernetesPodOperator(
+    task_id='evaluate_model',
+    image='your-repo/ml-evaluation:latest',
+    cmds=['python', 'evaluate_model.py'],
+    namespace='ecshop-ml',
+    dag=dag
+)
+
+# 4. A/B テスト準備
+setup_ab_test = SimpleHttpOperator(
+    task_id='setup_ab_test',
+    http_conn_id='ecshop_api',
+    endpoint='/api/v1/ab-tests',
+    method='POST',
+    data={
+        'test_name': 'recommendation_model_{{ ds_nodash }}',
+        'traffic_split': 0.1,  # 10% のトラフィックで開始
+        'model_version': '{{ ds_nodash }}'
+    },
+    dag=dag
+)
+
+# 5. モデルデプロイ (条件付き)
+deploy_model = KubernetesPodOperator(
+    task_id='deploy_model_to_kserve',
+    image='your-repo/kserve-deploy:latest',
+    cmds=['python', 'deploy_model.py'],
+    namespace='ecshop-ml',
+    dag=dag
+)
+
+# Dependencies
+prepare_features >> train_model >> evaluate_model >> setup_ab_test >> deploy_model
+```
+
+#### 3. ビジネスオペレーション DAGs
+```python
+# dags/business/daily_operations.py
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+from airflow.providers.slack.operators.slack_webhook import SlackWebhookOperator
+
+dag = DAG(
+    'daily_business_operations',
+    description='Daily business reports and automation',
+    schedule_interval='0 6 * * *',  # 毎日 AM 6:00
+    start_date=datetime(2025, 1, 1),
+    catchup=False
+)
+
+# 1. 日次売上レポート生成
+generate_sales_report = PostgresOperator(
+    task_id='generate_daily_sales_report',
+    sql="""
+    INSERT INTO daily_reports (report_date, report_type, report_data)
+    SELECT 
+        CURRENT_DATE - INTERVAL '1 day' as report_date,
+        'DAILY_SALES' as report_type,
+        json_build_object(
+            'total_orders', COUNT(*),
+            'total_revenue', SUM(total_amount),
+            'avg_order_value', AVG(total_amount),
+            'new_customers', COUNT(DISTINCT CASE WHEN first_order THEN user_id END)
+        ) as report_data
+    FROM orders o
+    LEFT JOIN (
+        SELECT user_id, MIN(ordered_at) as first_order_date
+        FROM orders GROUP BY user_id
+    ) first_orders ON o.user_id = first_orders.user_id 
+        AND DATE(o.ordered_at) = DATE(first_orders.first_order_date)
+    WHERE DATE(o.ordered_at) = CURRENT_DATE - INTERVAL '1 day'
+    """,
+    dag=dag
+)
+
+# 2. 在庫アラート
+inventory_alert = PostgresOperator(
+    task_id='check_low_inventory',
+    sql="""
+    INSERT INTO alerts (alert_type, alert_data, created_at)
+    SELECT 
+        'LOW_INVENTORY' as alert_type,
+        json_build_object(
+            'product_id', p.id,
+            'product_name', p.name,
+            'current_stock', p.stock_quantity,
+            'threshold', p.low_stock_threshold
+        ) as alert_data,
+        NOW() as created_at
+    FROM products p
+    WHERE p.stock_quantity <= p.low_stock_threshold
+    AND p.stock_quantity > 0
+    """,
+    dag=dag
+)
+
+# 3. カート放棄リマインダー
+cart_abandonment_reminder = KubernetesPodOperator(
+    task_id='send_cart_abandonment_emails',
+    image='your-repo/notification-service:latest',
+    cmds=['python', 'send_cart_reminders.py'],
+    namespace='ecshop-services',
+    env_vars={
+        'REMINDER_THRESHOLD_HOURS': '24',
+        'EMAIL_TEMPLATE': 'cart_abandonment'
+    },
+    dag=dag
+)
+
+# 4. 日次レポート通知
+send_daily_report = SlackWebhookOperator(
+    task_id='send_daily_report_to_slack',
+    http_conn_id='slack_webhook',
+    message="""
+    📊 Daily Sales Report - {{ ds }}
+    • Total Orders: {{ ti.xcom_pull(task_ids='generate_daily_sales_report') }}
+    • Dashboard: https://dashboard.ecshop.com/daily-report
+    """,
+    dag=dag
+)
+
+# Dependencies
+[generate_sales_report, inventory_alert, cart_abandonment_reminder] >> send_daily_report
+```
+
+#### 4. 顧客ライフサイクル DAGs
+```python
+# dags/customer/lifecycle_management.py
+
+dag = DAG(
+    'customer_lifecycle_management',
+    description='Customer lifecycle automation',
+    schedule_interval='0 8 * * *',  # 毎日 AM 8:00
+    start_date=datetime(2025, 1, 1),
+    catchup=False
+)
+
+# 1. 新規顧客ウェルカムシーケンス
+new_customer_welcome = KubernetesPodOperator(
+    task_id='new_customer_welcome',
+    image='your-repo/crm-automation:latest',
+    cmds=['python', 'new_customer_workflow.py'],
+    namespace='ecshop-services',
+    dag=dag
+)
+
+# 2. 非アクティブ顧客の検出・リエンゲージメント
+inactive_customer_reengagement = PostgresOperator(
+    task_id='detect_inactive_customers',
+    sql="""
+    INSERT INTO marketing_campaigns (user_id, campaign_type, campaign_data, created_at)
+    SELECT 
+        u.id as user_id,
+        'REACTIVATION' as campaign_type,
+        json_build_object(
+            'last_order_date', last_order.ordered_at,
+            'days_inactive', DATE_PART('day', NOW() - last_order.ordered_at),
+            'preferred_category', user_prefs.preferred_category
+        ) as campaign_data,
+        NOW() as created_at
+    FROM users u
+    LEFT JOIN (
+        SELECT user_id, MAX(ordered_at) as ordered_at
+        FROM orders GROUP BY user_id
+    ) last_order ON u.id = last_order.user_id
+    LEFT JOIN (
+        SELECT 
+            o.user_id,
+            c.name as preferred_category,
+            ROW_NUMBER() OVER (PARTITION BY o.user_id ORDER BY COUNT(*) DESC) as rn
+        FROM orders o
+        JOIN order_items oi ON o.id = oi.order_id
+        JOIN products p ON oi.product_id = p.id
+        JOIN product_categories pc ON p.id = pc.product_id
+        JOIN categories c ON pc.category_id = c.id
+        GROUP BY o.user_id, c.id, c.name
+    ) user_prefs ON u.id = user_prefs.user_id AND user_prefs.rn = 1
+    WHERE last_order.ordered_at < NOW() - INTERVAL '30 days'
+    OR last_order.ordered_at IS NULL
+    """,
+    dag=dag
+)
+
+# 3. 高価値顧客の特別オファー
+vip_customer_offers = PostgresOperator(
+    task_id='vip_customer_special_offers',
+    sql="""
+    INSERT INTO marketing_campaigns (user_id, campaign_type, campaign_data, created_at)
+    SELECT 
+        user_id,
+        'VIP_SPECIAL_OFFER' as campaign_type,
+        json_build_object(
+            'lifetime_value', lifetime_value,
+            'discount_percentage', 
+            CASE 
+                WHEN lifetime_value > 10000 THEN 20
+                WHEN lifetime_value > 5000 THEN 15
+                ELSE 10
+            END,
+            'valid_until', (NOW() + INTERVAL '7 days')::date
+        ) as campaign_data,
+        NOW() as created_at
+    FROM (
+        SELECT 
+            user_id,
+            SUM(total_amount) as lifetime_value,
+            COUNT(*) as order_count
+        FROM orders
+        WHERE ordered_at > NOW() - INTERVAL '12 months'
+        GROUP BY user_id
+        HAVING SUM(total_amount) > 1000
+        AND COUNT(*) >= 5
+    ) vip_customers
+    """,
+    dag=dag
+)
+
+# Dependencies
+[new_customer_welcome, inactive_customer_reengagement, vip_customer_offers]
+```
+
+## データフロー設計
+
+### Airflow-Orchestrated Data Pipeline
+
+```mermaid
+graph TB
+    subgraph "Real-time Layer"
+        A[User Actions] --> B[Message Queue]
+        B --> C[Stream Processing]
+        C --> D[Feature Store]
+        D --> E[Real-time Recommendations]
+    end
+    
+    subgraph "Batch Layer - Airflow Orchestrated"
+        F[Daily ETL DAG] --> G[PostgreSQL Extract]
+        G --> H[dbt Transform]
+        H --> I[Data Quality Check]
+        I --> J[DuckDB Load]
+        I --> K[Snowflake Load]
+    end
+    
+    subgraph "ML Pipeline - Airflow Orchestrated"
+        L[ML Training DAG] --> M[Feature Engineering]
+        M --> N[Kubeflow Training]
+        N --> O[Model Validation]
+        O --> P[MLflow Registry]
+        P --> Q[KServe Deployment]
+        Q --> R[A/B Test Setup]
+    end
+    
+    subgraph "Business Operations - Airflow Orchestrated"
+        S[Business DAG] --> T[Daily Reports]
+        S --> U[Inventory Alerts]  
+        S --> V[Customer Lifecycle]
+        S --> W[Marketing Automation]
+    end
+    
+    K --> L
+    J --> L
+    B --> F
+```
+
+### ML Pipeline
+
+```mermaid
+graph LR
+    A[Data Collection] --> B[Feature Engineering]
+    B --> C[Model Training - Kubeflow]
+    C --> D[Model Validation]
+    D --> E[Model Registry - MLflow]
+    E --> F[Model Deployment - KServe]
+    F --> G[A/B Testing]
+    G --> H[Performance Monitoring]
+    H --> A
+```
+
+## ML/レコメンデーション設計
+
+### 推奨アルゴリズム
+
+#### 1. Random Forest - 商品レコメンデーション
+```python
+# 特徴量: ViewHistory + Product attributes
+features = [
+    'user_view_frequency',
+    'product_category',
+    'product_rating',
+    'product_price_range',
+    'time_since_last_view'
+]
+```
+
+#### 2. K-means - ユーザーセグメンテーション
+```python
+# 特徴量: CartItem behavior
+features = [
+    'avg_cart_value',
+    'cart_frequency',
+    'preferred_categories',
+    'price_sensitivity'
+]
+```
+
+#### 3. Linear Regression - 売上予測
+```python
+# 特徴量: Order history
+features = [
+    'seasonal_trends',
+    'user_lifetime_value',
+    'product_popularity',
+    'promotional_impact'
+]
+```
+
+#### 4. PCA - 次元削減
+```python
+# UserActionLog の高次元データを低次元に圧縮
+# リアルタイム推論の高速化
+```
+
+### TopPageDisplay Strategy
+
+```typescript
+enum DisplayType {
+  SALE,                 // セール商品
+  RECOMMENDED,          // 閲覧履歴ベースのおすすめ  
+  REPURCHASE,           // 再購入促進
+  DAILY_DEAL,           // 今日の特価
+  RECOMMENDED_CATEGORY, // おすすめカテゴリー
+  CONTINUE_SHOPPING     // ショッピングを続ける
+}
+```
+
+## インフラ構成
+
+### Kubernetes Resources
+
+```yaml
+Namespaces:
+- ecshop-frontend
+- ecshop-api  
+- ecshop-services
+- ecshop-data
+- ecshop-ml
+- ecshop-airflow
+
+Services per Namespace:
+Frontend: Next.js (3 replicas)
+API: Spring Boot Gateway (2 replicas)
+Services: Gin microservices (2 replicas each)
+Data: PostgreSQL, Redis, RabbitMQ
+ML: MLflow, Kubeflow components
+Airflow: Scheduler, Webserver, Workers (3 replicas each)
+```
+
+### AWS Resources
+
+```hcl
+# Terraform managed
+- EKS Cluster (multi-AZ)
+- RDS PostgreSQL (Multi-AZ)
+- RDS PostgreSQL (Airflow Metadata)
+- ElastiCache Redis
+- S3 (data lake, model artifacts, airflow logs)
+- ALB (ingress)
+- Route53 (DNS)
+- CloudWatch (monitoring)
+```
+
+## セキュリティ設計
+
+### Authentication & Authorization
+
+```yaml
+Authentication:
+- Keycloak OIDC/OAuth2
+- JWT Token based
+- Multi-factor Authentication
+
+Authorization:
+- RBAC (Role-Based Access Control)
+- API Gateway レベルでの認可
+- Service-to-Service mTLS
+```
+
+### Data Security
+
+```yaml
+In-Transit:
+- TLS 1.3 全通信
+- Service Mesh (Istio) encryption
+
+At-Rest:
+- PostgreSQL encryption
+- S3 bucket encryption
+- Secrets management (AWS Secrets Manager)
+```
+
+## モニタリング・運用
+
+### Observability Stack
+
+```yaml
+Metrics: Prometheus + Grafana
+Logging: ELK Stack (Elasticsearch, Logstash, Kibana)
+Tracing: Jaeger
+Alerting: AlertManager + PagerDuty
+Workflow Monitoring: Airflow Web UI + Metrics
+
+Business Metrics:
+- Conversion Rate
+- Cart Abandonment
+- Recommendation CTR
+- Model Performance (precision, recall)
+- Data Pipeline SLA
+- Workflow Success Rate
+```
+
+### FinOps
+
+```yaml
+Cost Optimization:
+- Spot instances for batch workloads
+- Auto-scaling based on metrics
+- Snowflake warehouse auto-suspend
+- S3 lifecycle policies
+- Airflow worker auto-scaling
+- Scheduled resource scaling (dev environments)
+
+Monitoring:
+- Daily cost reports (Airflow automated)
+- Resource utilization alerts
+- ML training cost tracking
+- Workflow resource consumption
+```
+
+## 開発・デプロイメント
+
+### GitOps Workflow
+
+```yaml
+Development:
+1. Feature branch development
+2. Local testing with Docker Compose
+3. PR review + automated testing
+4. Merge to main
+
+Deployment:
+1. ArgoCD auto-deployment
+2. Blue-Green deployment
+3. Automated rollback on failure
+4. Health checks + smoke tests
+```
+
+### CI/CD Pipeline
+
+```yaml
+GitHub Actions:
+- Unit Tests (Go, TypeScript)
+- Integration Tests
+- Security Scanning
+- Container Image Build
+- Helm Chart Validation
+- Deploy to Staging
+- E2E Tests
+- Deploy to Production
+```
+
+## パフォーマンス要件
+
+### SLA/SLO
+
+```yaml
+API Response Time:
+- p95 < 200ms (product catalog)
+- p95 < 500ms (recommendations)
+- p95 < 100ms (cart operations)
+
+Availability:
+- 99.9% uptime
+- 99.95% during peak hours
+
+ML Model Performance:
+- Recommendation relevance > 85%
+- Model training < 2 hours
+- Real-time inference < 50ms
+```
+
+### Scalability
+
+```yaml
+Traffic Capacity:
+- 10,000 concurrent users
+- 1M page views/day
+- 100,000 recommendations/hour
+
+Data Volume:
+- 10M+ products
+- 1M+ active users  
+- 100GB+ daily logs
+```
+
+## 今後の拡張計画
+
+### Phase 1 (Current)
+- 基本EC機能
+- 基本レコメンデーション
+- 基盤構築
+
+### Phase 2 (3-6 months)
+- Advanced ML models
+- Real-time personalization
+- Mobile app
+
+### Phase 3 (6-12 months)  
+- Multi-tenant support
+- Advanced analytics
+- International expansion
+
+---
+
+## Quick Start
+
+### Prerequisites
+```bash
+- AWS CLI configured
+- kubectl configured  
+- Terraform >= 1.0
+- Docker & Docker Compose
+- Node.js >= 18
+- Go >= 1.21
+```
+
+### Development Setup
+```bash
+# Clone repository
+git clone https://github.com/your-org/ecshop
+cd ecshop
+
+# Infrastructure setup
+cd terraform && terraform apply
+
+# Start Airflow locally
+cd airflow && docker-compose up -d
+
+# Local development
+docker-compose up -d
+npm run dev
+```
+
+### Production Deployment
+```bash
+# Deploy via ArgoCD
+kubectl apply -f k8s/argocd-apps/
+
+# Access Airflow UI
+kubectl port-forward -n ecshop-airflow svc/airflow-webserver 8080:8080
+# Open http://localhost:8080 (admin/admin)
+```
+
+---
+
+**License**: MIT  
+**Maintainer**: Data Engineering Team  
+**Last Updated**: 2025-06-30
