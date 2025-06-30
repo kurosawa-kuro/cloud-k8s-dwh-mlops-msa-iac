@@ -1,5 +1,3 @@
-# cloud-k8s-dwh-mlops-msa-iac
-
 # ECShop - Enterprise E-commerce Platform
 
 ## 概要
@@ -113,7 +111,7 @@ graph TB
 ### Core Entities
 
 #### ユーザー管理
-- **User**: Cognito連携による認証基盤
+- **User**: Keycloak連携による認証基盤
 - **Role/UserRole**: RBAC による権限管理
 - **UserActionLog**: 全ユーザー行動のログ収集
 
@@ -145,7 +143,7 @@ UserActionLog: 行動ログ分析（PCA次元削減）
 #### 1. User Service
 ```go
 // Responsibilities:
-- ユーザー認証・認可
+- ユーザー認証・認可 (Keycloak連携)
 - プロファイル管理
 - ロール・権限管理
 
@@ -154,6 +152,8 @@ GET    /api/v1/users/{id}
 PUT    /api/v1/users/{id}
 POST   /api/v1/users/{id}/roles
 DELETE /api/v1/users/{id}/roles/{roleId}
+GET    /api/v1/users/{id}/profile
+PUT    /api/v1/users/{id}/profile
 ```
 
 #### 2. Product Service
@@ -630,7 +630,514 @@ vip_customer_offers = PostgresOperator(
 [new_customer_welcome, inactive_customer_reengagement, vip_customer_offers]
 ```
 
-## データフロー設計
+## Keycloak 統合アーキテクチャ
+
+### Identity & Access Management
+
+```mermaid
+graph TB
+    subgraph "Keycloak Realm: ECShop"
+        A[Keycloak Server]
+        B[Realm: ecshop]
+        C[Client: next-app]
+        D[Client: spring-gateway]
+        E[Client: services]
+        F[Users & Groups]
+        G[Roles & Permissions]
+        H[Identity Providers]
+    end
+    
+    subgraph "Frontend Authentication"
+        I[Next.js App]
+        J[OIDC Client]
+        K[JWT Token]
+    end
+    
+    subgraph "Backend Authorization"
+        L[Spring Gateway]
+        M[JWT Verification]
+        N[Role-based Access]
+        O[Service Authorization]
+    end
+    
+    subgraph "Database Integration"
+        P[User Sync Service]
+        Q[PostgreSQL Users]
+        R[Audit Logs]
+    end
+    
+    I --> J
+    J --> B
+    B --> K
+    K --> L
+    L --> M
+    M --> N
+    N --> O
+    A --> P
+    P --> Q
+    P --> R
+```
+
+### Keycloak Realm 設定
+
+#### Realm Configuration
+```json
+{
+  "realm": "ecshop",
+  "enabled": true,
+  "displayName": "ECShop Platform",
+  "userManagedAccessAllowed": true,
+  "attributes": {
+    "frontendUrl": "https://auth.ecshop.com",
+    "adminEventsEnabled": true,
+    "adminEventsDetailsEnabled": true,
+    "eventsEnabled": true,
+    "eventsExpiration": 1800
+  }
+}
+```
+
+#### Client Configurations
+
+##### 1. Next.js Frontend Client
+```json
+{
+  "clientId": "ecshop-frontend",
+  "name": "ECShop Frontend Application",
+  "protocol": "openid-connect",
+  "publicClient": true,
+  "standardFlowEnabled": true,
+  "implicitFlowEnabled": false,
+  "directAccessGrantsEnabled": false,
+  "redirectUris": [
+    "https://ecshop.com/*",
+    "http://localhost:3000/*"
+  ],
+  "webOrigins": [
+    "https://ecshop.com",
+    "http://localhost:3000"
+  ],
+  "attributes": {
+    "pkce.code.challenge.method": "S256"
+  }
+}
+```
+
+##### 2. Spring Boot Gateway Client
+```json
+{
+  "clientId": "ecshop-gateway",
+  "name": "ECShop API Gateway",
+  "protocol": "openid-connect",
+  "publicClient": false,
+  "bearerOnly": true,
+  "serviceAccountsEnabled": true,
+  "attributes": {
+    "access.token.lifespan": "1800"
+  }
+}
+```
+
+##### 3. Microservices Client
+```json
+{
+  "clientId": "ecshop-services",
+  "name": "ECShop Microservices",
+  "protocol": "openid-connect",
+  "publicClient": false,
+  "serviceAccountsEnabled": true,
+  "authorizationServicesEnabled": true
+}
+```
+
+### Role & Permission 設計
+
+#### Realm Roles
+```yaml
+Roles:
+  # Customer Roles
+  - customer:
+      description: "Regular customer access"
+      composite: false
+      
+  - premium_customer:
+      description: "Premium customer with enhanced features"
+      composite: true
+      composites:
+        realm: ["customer"]
+        
+  # Staff Roles  
+  - staff:
+      description: "Staff member base access"
+      composite: false
+      
+  - inventory_manager:
+      description: "Inventory management access"
+      composite: true
+      composites:
+        realm: ["staff"]
+        
+  - sales_manager:
+      description: "Sales and customer management"
+      composite: true
+      composites:
+        realm: ["staff"]
+        
+  # Admin Roles
+  - admin:
+      description: "Platform administrator"
+      composite: true
+      composites:
+        realm: ["staff", "inventory_manager", "sales_manager"]
+        
+  - super_admin:
+      description: "Super administrator with full access"
+      composite: true
+      composites:
+        realm: ["admin"]
+```
+
+#### Client-specific Roles
+```yaml
+Client Roles (ecshop-services):
+  # User Service
+  - user:read
+  - user:write
+  - user:admin
+  
+  # Product Service
+  - product:read
+  - product:write
+  - product:admin
+  
+  # Order Service
+  - order:read
+  - order:write
+  - order:process
+  - order:admin
+  
+  # Cart Service
+  - cart:read
+  - cart:write
+  
+  # Recommendation Service
+  - recommendation:read
+  - recommendation:admin
+```
+
+### User Federation & Sync
+
+#### User Sync Service Implementation
+```go
+// user-sync-service/main.go
+package main
+
+type KeycloakUser struct {
+    ID           string            `json:"id"`
+    Username     string            `json:"username"`  
+    Email        string            `json:"email"`
+    FirstName    string            `json:"firstName"`
+    LastName     string            `json:"lastName"`
+    Enabled      bool              `json:"enabled"`
+    Attributes   map[string]string `json:"attributes"`
+    RealmRoles   []string          `json:"realmRoles"`
+    CreatedAt    int64             `json:"createdTimestamp"`
+}
+
+type DatabaseUser struct {
+    ID            string    `db:"id"`
+    Email         string    `db:"email"`
+    KeycloakID    string    `db:"keycloak_id"`
+    FirstName     string    `db:"first_name"`
+    LastName      string    `db:"last_name"`
+    EmailVerified bool      `db:"email_verified"`
+    Status        string    `db:"status"`
+    LastLoginAt   time.Time `db:"last_login_at"`
+    CreatedAt     time.Time `db:"created_at"`
+    UpdatedAt     time.Time `db:"updated_at"`
+}
+
+func SyncKeycloakUsers() error {
+    // Keycloak Admin API から全ユーザー取得
+    keycloakUsers, err := keycloakClient.GetUsers()
+    if err != nil {
+        return err
+    }
+    
+    for _, kcUser := range keycloakUsers {
+        // データベースのユーザー情報と同期
+        dbUser := DatabaseUser{
+            ID:            generateUUID(),
+            KeycloakID:    kcUser.ID,
+            Email:         kcUser.Email,
+            FirstName:     kcUser.FirstName,
+            LastName:      kcUser.LastName,
+            EmailVerified: kcUser.Enabled,
+            Status:        getStatusFromKeycloak(kcUser),
+            UpdatedAt:     time.Now(),
+        }
+        
+        err := upsertUser(dbUser)
+        if err != nil {
+            log.Printf("Failed to sync user %s: %v", kcUser.Email, err)
+            continue
+        }
+        
+        // ロール同期
+        err = syncUserRoles(dbUser.ID, kcUser.RealmRoles)
+        if err != nil {
+            log.Printf("Failed to sync roles for user %s: %v", kcUser.Email, err)
+        }
+    }
+    
+    return nil
+}
+```
+
+### 更新されたデータモデル
+
+#### Prisma Schema 変更
+```prisma
+model User {
+  // Keycloakとの連携のため修正
+  id              String    @id @default(uuid())  // UUID主キー
+  email           String    @unique
+  keycloakId      String    @unique              // Keycloak User ID
+  firstName       String?
+  lastName        String?
+  
+  // 認証関連の情報
+  emailVerified   Boolean   @default(false)
+  lastLoginAt     DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+  
+  // ステータス管理
+  status          UserStatus @default(ACTIVE)
+  
+  // Keycloak attributes のキャッシュ
+  preferredLanguage String? @default("ja")
+  timezone         String?  @default("Asia/Tokyo")
+  
+  // リレーション（既存）
+  userRoles       UserRole[]
+  viewHistories   ViewHistory[]
+  cartItems       CartItem[]
+  orders          Order[]
+  returns         Return[]
+  
+  @@index([keycloakId])
+  @@index([email])
+}
+```
+
+### Spring Boot Gateway 統合
+
+#### Security Configuration
+```java
+// gateway/src/main/java/config/SecurityConfig.java
+@Configuration
+@EnableWebFluxSecurity
+@EnableReactiveMethodSecurity
+public class SecurityConfig {
+    
+    @Value("${keycloak.auth-server-url}")
+    private String keycloakServerUrl;
+    
+    @Value("${keycloak.realm}")
+    private String realm;
+    
+    @Bean
+    public SecurityWebFilterChain securityWebFilterChain(ServerHttpSecurity http) {
+        return http
+            .csrf().disable()
+            .authorizeExchange(exchanges -> exchanges
+                // Public endpoints
+                .pathMatchers("/api/v1/health", "/api/v1/products").permitAll()
+                .pathMatchers("/api/v1/auth/**").permitAll()
+                
+                // Customer endpoints
+                .pathMatchers(HttpMethod.GET, "/api/v1/users/{userId}/cart")
+                    .hasAnyRole("customer", "premium_customer")
+                    
+                // Staff endpoints  
+                .pathMatchers("/api/v1/admin/**")
+                    .hasRole("staff")
+                    
+                // Admin endpoints
+                .pathMatchers("/api/v1/workflows/**")
+                    .hasRole("admin")
+                    
+                .anyExchange().authenticated()
+            )
+            .oauth2ResourceServer(oauth2 -> oauth2
+                .jwt(jwt -> jwt
+                    .jwtDecoder(jwtDecoder())
+                    .jwtAuthenticationConverter(jwtAuthenticationConverter())
+                )
+            )
+            .build();
+    }
+    
+    @Bean
+    public ReactiveJwtDecoder jwtDecoder() {
+        String issuerUri = keycloakServerUrl + "/realms/" + realm;
+        return ReactiveJwtDecoders.fromIssuerLocation(issuerUri);
+    }
+    
+    @Bean
+    public Converter<Jwt, Mono<AbstractAuthenticationToken>> jwtAuthenticationConverter() {
+        JwtAuthenticationConverter converter = new JwtAuthenticationConverter();
+        converter.setJwtGrantedAuthoritiesConverter(new KeycloakRealmRoleConverter());
+        return new ReactiveJwtAuthenticationConverterAdapter(converter);
+    }
+}
+```
+
+#### Keycloak Role Converter
+```java
+// gateway/src/main/java/security/KeycloakRealmRoleConverter.java
+public class KeycloakRealmRoleConverter implements Converter<Jwt, Collection<GrantedAuthority>> {
+    
+    @Override
+    public Collection<GrantedAuthority> convert(Jwt jwt) {
+        Collection<GrantedAuthority> authorities = new ArrayList<>();
+        
+        // Realm roles
+        Map<String, Object> realmAccess = jwt.getClaim("realm_access");
+        if (realmAccess != null && realmAccess.get("roles") != null) {
+            Collection<String> roles = (Collection<String>) realmAccess.get("roles");
+            authorities.addAll(roles.stream()
+                .map(role -> new SimpleGrantedAuthority("ROLE_" + role))
+                .collect(Collectors.toList()));
+        }
+        
+        // Resource access (client roles)
+        Map<String, Object> resourceAccess = jwt.getClaim("resource_access");
+        if (resourceAccess != null) {
+            resourceAccess.forEach((client, access) -> {
+                Map<String, Object> clientAccess = (Map<String, Object>) access;
+                Collection<String> clientRoles = (Collection<String>) clientAccess.get("roles");
+                if (clientRoles != null) {
+                    authorities.addAll(clientRoles.stream()
+                        .map(role -> new SimpleGrantedAuthority("ROLE_" + client + "_" + role))
+                        .collect(Collectors.toList()));
+                }
+            });
+        }
+        
+        return authorities;
+    }
+}
+```
+
+### Next.js Frontend 統合
+
+#### NextAuth.js with Keycloak
+```typescript
+// frontend/lib/auth.ts
+import NextAuth, { NextAuthOptions } from "next-auth"
+import KeycloakProvider from "next-auth/providers/keycloak"
+
+export const authOptions: NextAuthOptions = {
+  providers: [
+    KeycloakProvider({
+      clientId: process.env.KEYCLOAK_CLIENT_ID!,
+      clientSecret: process.env.KEYCLOAK_CLIENT_SECRET!,
+      issuer: `${process.env.KEYCLOAK_SERVER_URL}/realms/${process.env.KEYCLOAK_REALM}`,
+      authorization: {
+        params: {
+          scope: "openid email profile",
+          response_type: "code",
+          code_challenge_method: "S256"
+        }
+      }
+    })
+  ],
+  
+  callbacks: {
+    async jwt({ token, account, profile }) {
+      if (account) {
+        token.accessToken = account.access_token
+        token.refreshToken = account.refresh_token
+        token.keycloakId = profile?.sub
+        token.roles = profile?.realm_access?.roles || []
+      }
+      return token
+    },
+    
+    async session({ session, token }) {
+      session.accessToken = token.accessToken as string
+      session.user.keycloakId = token.keycloakId as string
+      session.user.roles = token.roles as string[]
+      return session
+    }
+  },
+  
+  events: {
+    async signOut({ token }) {
+      // Keycloak logout
+      const keycloakLogoutUrl = `${process.env.KEYCLOAK_SERVER_URL}/realms/${process.env.KEYCLOAK_REALM}/protocol/openid-connect/logout`
+      await fetch(keycloakLogoutUrl, {
+        method: 'POST',
+        headers: {
+          'Authorization': `Bearer ${token.accessToken}`,
+          'Content-Type': 'application/x-www-form-urlencoded'
+        },
+        body: `refresh_token=${token.refreshToken}`
+      })
+    }
+  }
+}
+```
+
+### Airflow Keycloak 統合
+
+#### Airflow DAG with Keycloak Auth
+```python
+# dags/auth/user_sync.py
+from airflow import DAG
+from airflow.providers.http.operators.http import SimpleHttpOperator
+from airflow.providers.postgres.operators.postgres import PostgresOperator
+
+dag = DAG(
+    'keycloak_user_sync',
+    description='Sync Keycloak users to PostgreSQL',
+    schedule_interval='0 */6 * * *',  # 6時間毎
+    start_date=datetime(2025, 1, 1),
+    catchup=False
+)
+
+# Keycloak Admin Token 取得
+get_admin_token = SimpleHttpOperator(
+    task_id='get_keycloak_admin_token',
+    http_conn_id='keycloak_admin',
+    endpoint='/realms/master/protocol/openid-connect/token',
+    method='POST',
+    data={
+        'grant_type': 'client_credentials',
+        'client_id': 'admin-cli',
+        'client_secret': '{{ var.value.keycloak_admin_secret }}'
+    },
+    dag=dag
+)
+
+# ユーザー同期
+sync_users = KubernetesPodOperator(
+    task_id='sync_keycloak_users',
+    image='your-repo/user-sync-service:latest',
+    cmds=['python', 'sync_users.py'],
+    namespace='ecshop-services',
+    env_vars={
+        'KEYCLOAK_ADMIN_TOKEN': '{{ ti.xcom_pull(task_ids="get_keycloak_admin_token") }}',
+        'KEYCLOAK_SERVER_URL': '{{ var.value.keycloak_server_url }}',
+        'POSTGRES_DSN': '{{ var.value.postgres_dsn }}'
+    },
+    dag=dag
+)
+
+get_admin_token >> sync_users
+```
 
 ### Airflow-Orchestrated Data Pipeline
 
@@ -755,6 +1262,7 @@ Namespaces:
 - ecshop-data
 - ecshop-ml
 - ecshop-airflow
+- ecshop-auth
 
 Services per Namespace:
 Frontend: Next.js (3 replicas)
@@ -763,6 +1271,7 @@ Services: Gin microservices (2 replicas each)
 Data: PostgreSQL, Redis, RabbitMQ
 ML: MLflow, Kubeflow components
 Airflow: Scheduler, Webserver, Workers (3 replicas each)
+Auth: Keycloak (2 replicas), PostgreSQL for Keycloak
 ```
 
 ### AWS Resources
